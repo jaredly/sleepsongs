@@ -1,0 +1,20 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# Android Studio Navigation editor temp files
+.navigation/
+
+# Keystore files
+*.jks
+*.keystore
+
+# macOS
+*.swp
+app/build
