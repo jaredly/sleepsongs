@@ -25,6 +25,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -50,8 +51,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                SleepSongsScreen()
+            SleepSongsTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    SleepSongsScreen()
+                }
             }
         }
     }
@@ -67,7 +73,7 @@ private fun SleepSongsScreen() {
     var selectedName by remember { mutableStateOf<String?>(null) }
     var repeatCountText by remember { mutableStateOf("3") }
     var fadeOnFinalLoop by remember { mutableStateOf(true) }
-    var status by remember { mutableStateOf("Pick a song and press Play") }
+    var status by remember { mutableStateOf("Pick a file and press Play") }
     var currentLoop by remember { mutableIntStateOf(0) }
     var totalLoops by remember { mutableIntStateOf(0) }
     var selectedDurationMs by remember { mutableStateOf<Long?>(null) }
@@ -109,8 +115,8 @@ private fun SleepSongsScreen() {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        Button(onClick = { pickAudioLauncher.launch(arrayOf("audio/*")) }) {
-            Text("Choose audio file")
+        Button(onClick = { pickAudioLauncher.launch(arrayOf("audio/*", "video/*")) }) {
+            Text("Choose audio or video file")
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -175,7 +181,7 @@ private fun SleepSongsScreen() {
                     val selectedRepeatCount = repeatCountText.toIntOrNull()
                     val uri = selectedUri
                     when {
-                        uri == null -> status = "Select an audio file first"
+                        uri == null -> status = "Select an audio or video file first"
                         selectedRepeatCount == null || selectedRepeatCount <= 0 -> status = "Enter a repeat count greater than 0"
                         else -> {
                             player.play(
