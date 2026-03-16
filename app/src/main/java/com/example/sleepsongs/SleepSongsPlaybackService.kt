@@ -1,10 +1,13 @@
 package com.example.sleepsongs
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -41,6 +44,7 @@ class SleepSongsPlaybackService : MediaSessionService() {
         super.onCreate()
 
         audioManager = getSystemService(AudioManager::class.java)
+        ensureNotificationChannel()
 
         player = ExoPlayer.Builder(this).build().apply {
             setAudioAttributes(
@@ -305,5 +309,23 @@ class SleepSongsPlaybackService : MediaSessionService() {
         private const val NOTIFICATION_CHANNEL_ID = "sleep_songs_playback"
         private const val NOTIFICATION_ID = 1001
         private const val OUTPUT_DEFAULT = -1
+    }
+
+    private fun ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+
+        val manager = getSystemService(NotificationManager::class.java)
+        val existing = manager.getNotificationChannel(NOTIFICATION_CHANNEL_ID)
+        if (existing != null) return
+
+        val channel = NotificationChannel(
+            NOTIFICATION_CHANNEL_ID,
+            "Sleep Songs Playback",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Playback controls for Sleep Songs"
+            setShowBadge(false)
+        }
+        manager.createNotificationChannel(channel)
     }
 }
