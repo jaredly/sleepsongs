@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ComponentName
 import android.content.ContentResolver
 import android.content.Context
+import android.content.Context.MODE_PRIVATE
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -18,6 +19,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -26,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -44,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -53,6 +57,8 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
+import org.json.JSONArray
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -75,9 +81,15 @@ private data class OutputDeviceOption(
     val label: String
 )
 
+private data class RecentMediaItem(
+    val uriString: String,
+    val displayName: String?
+)
+
 @Composable
 private fun SleepSongsScreen() {
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     val contentResolver = context.contentResolver
 
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
@@ -90,6 +102,16 @@ private fun SleepSongsScreen() {
 
     var showOutputPicker by remember { mutableStateOf(false) }
     var outputOptions by remember { mutableStateOf<List<OutputDeviceOption>>(emptyList()) }
+    var recentHistory by remember { mutableStateOf(context.loadRecentMediaItems()) }
+
+    val applySelectedMedia: (Uri, String?) -> Unit = { uri, nameHint ->
+        val resolvedName = nameHint ?: contentResolver.getDisplayName(uri)
+        selectedUri = uri
+        selectedName = resolvedName
+        selectedDurationMs = contentResolver.getDurationMs(context, uri)
+        status = "Selected: ${resolvedName ?: uri}"
+        recentHistory = context.addRecentMediaItem(uri.toString(), resolvedName)
+    }
 
     val notificationsPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -109,10 +131,7 @@ private fun SleepSongsScreen() {
             } catch (_: SecurityException) {
                 // Not all providers support persistable permissions.
             }
-            selectedUri = uri
-            selectedName = contentResolver.getDisplayName(uri)
-            selectedDurationMs = contentResolver.getDurationMs(context, uri)
-            status = "Selected: ${selectedName ?: uri}"
+            applySelectedMedia(uri, null)
         }
     }
 
@@ -192,8 +211,9 @@ private fun SleepSongsScreen() {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(24.dp),
-        verticalArrangement = Arrangement.Center,
+        verticalArrangement = Arrangement.Top,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
@@ -296,7 +316,9 @@ private fun SleepSongsScreen() {
                     when {
                         controller == null -> status = "Playback service is not ready"
                         uri == null -> status = "Select an audio or video file first"
-                        selectedRepeatCount == null || selectedRepeatCount <= 0 -> status = "Enter a repeat count greater than 0"
+                        selectedRepeatCount == null || selectedRepeatCount <= 0 -> status =
+                            "Enter a repeat count greater than 0"
+
                         else -> {
                             val command = SessionCommand(PlaybackCommands.START_PLAYBACK, EMPTY)
                             val args = bundleOf(
@@ -337,6 +359,44 @@ private fun SleepSongsScreen() {
 
         Spacer(modifier = Modifier.height(12.dp))
         Text(text = status, style = MaterialTheme.typography.bodyMedium)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text(
+            text = "Recent history",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        if (recentHistory.isEmpty()) {
+            Text(
+                text = "No recent items yet",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+            )
+        } else {
+            recentHistory.forEach { item ->
+                Text(
+                    text = item.displayName ?: item.uriString,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            applySelectedMedia(Uri.parse(item.uriString), item.displayName)
+                        }
+                        .padding(vertical = 10.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        TextButton(
+            onClick = { uriHandler.openUri("https://github.com/jaredly/sleepsongs/releases") }
+        ) {
+            Text("Check for new releases")
+        }
     }
 }
 
@@ -349,12 +409,12 @@ private fun Context.getOutputDevicesForPicker(): List<OutputDeviceOption> {
     devices
         .filter { device ->
             device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||
-                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                device.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
-                device.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                    device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                    device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                    device.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                    device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                    device.type == AudioDeviceInfo.TYPE_USB_HEADSET
         }
         .distinctBy { it.id }
         .forEach { device ->
@@ -364,9 +424,11 @@ private fun Context.getOutputDevicesForPicker(): List<OutputDeviceOption> {
                 AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
                 AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
                 AudioDeviceInfo.TYPE_BLE_HEADSET -> "Bluetooth device"
+
                 AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
                 AudioDeviceInfo.TYPE_WIRED_HEADSET,
                 AudioDeviceInfo.TYPE_USB_HEADSET -> "Headphones"
+
                 else -> "Audio device"
             }
             options += OutputDeviceOption(id = device.id, label = name ?: fallback)
@@ -409,3 +471,55 @@ private fun formatDuration(durationMs: Long): String {
 }
 
 private const val OUTPUT_DEFAULT = -1
+private const val PREFS_NAME = "sleep_songs_prefs"
+private const val PREF_RECENT_MEDIA = "recent_media_items"
+private const val MAX_RECENT_MEDIA_ITEMS = 5
+
+private fun Context.loadRecentMediaItems(): List<RecentMediaItem> {
+    val raw = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(PREF_RECENT_MEDIA, null)
+        ?: return emptyList()
+
+    return try {
+        val array = JSONArray(raw)
+        buildList {
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val uri = item.optString("uri")
+                if (uri.isBlank()) continue
+                add(
+                    RecentMediaItem(
+                        uriString = uri,
+                        displayName = item.optString("name").ifBlank { null }
+                    )
+                )
+            }
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun Context.addRecentMediaItem(uriString: String, displayName: String?): List<RecentMediaItem> {
+    val updated = buildList {
+        add(RecentMediaItem(uriString = uriString, displayName = displayName))
+        addAll(loadRecentMediaItems().filterNot { it.uriString == uriString })
+    }.take(MAX_RECENT_MEDIA_ITEMS)
+
+    val encoded = JSONArray().apply {
+        updated.forEach { item ->
+            put(
+                JSONObject().apply {
+                    put("uri", item.uriString)
+                    put("name", item.displayName ?: "")
+                }
+            )
+        }
+    }.toString()
+
+    getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        .edit()
+        .putString(PREF_RECENT_MEDIA, encoded)
+        .apply()
+
+    return updated
+}
