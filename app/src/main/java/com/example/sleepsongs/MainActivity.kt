@@ -5,6 +5,8 @@ import android.content.ComponentName
 import android.content.ContentResolver
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -15,6 +17,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,17 +26,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -45,16 +46,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.os.bundleOf
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
-import androidx.mediarouter.app.MediaRouteButton
-import androidx.mediarouter.media.MediaControlIntent
-import androidx.mediarouter.media.MediaRouteSelector
 import com.google.common.util.concurrent.ListenableFuture
 
 class MainActivity : AppCompatActivity() {
@@ -73,6 +70,11 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
+private data class OutputDeviceOption(
+    val id: Int,
+    val label: String
+)
+
 @Composable
 private fun SleepSongsScreen() {
     val context = LocalContext.current
@@ -86,11 +88,14 @@ private fun SleepSongsScreen() {
     var selectedDurationMs by remember { mutableStateOf<Long?>(null) }
     var mediaController by remember { mutableStateOf<MediaController?>(null) }
 
+    var showOutputPicker by remember { mutableStateOf(false) }
+    var outputOptions by remember { mutableStateOf<List<OutputDeviceOption>>(emptyList()) }
+
     val notificationsPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (!granted) {
-            status = "Notification permission denied. Playback still works while app is open."
+            status = "Notification permission denied. Notification controls may be hidden."
         }
     }
 
@@ -121,7 +126,7 @@ private fun SleepSongsScreen() {
                 try {
                     mediaController = controllerFuture.get()
                     status = "Ready"
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     status = "Could not connect to playback service"
                 }
             },
@@ -152,6 +157,38 @@ private fun SleepSongsScreen() {
         null
     }
 
+    if (showOutputPicker) {
+        AlertDialog(
+            onDismissRequest = { showOutputPicker = false },
+            title = { Text("Select audio output") },
+            text = {
+                Column {
+                    outputOptions.forEach { option ->
+                        Text(
+                            text = option.label,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    mediaController?.sendCustomCommand(
+                                        SessionCommand(PlaybackCommands.SET_OUTPUT_DEVICE, EMPTY),
+                                        bundleOf(PlaybackCommands.EXTRA_OUTPUT_DEVICE_ID to option.id)
+                                    )
+                                    status = "Audio output: ${option.label}"
+                                    showOutputPicker = false
+                                }
+                                .padding(vertical = 10.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showOutputPicker = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -168,14 +205,24 @@ private fun SleepSongsScreen() {
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Button(onClick = { pickFileLauncher.launch(arrayOf("audio/*", "video/*")) }) {
-                Text("Choose audio or video")
+            Button(
+                onClick = { pickFileLauncher.launch(arrayOf("audio/*", "video/*")) },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Choose file")
             }
 
-            RoutePickerButton()
+            Button(
+                onClick = {
+                    outputOptions = context.getOutputDevicesForPicker()
+                    showOutputPicker = true
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Audio output")
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -233,8 +280,6 @@ private fun SleepSongsScreen() {
         ) {
             Spacer(modifier = Modifier.height(8.dp))
             Button(onClick = { notificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }) {
-                Icon(Icons.Filled.Notifications, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
                 Text("Enable media notifications")
             }
         }
@@ -295,21 +340,39 @@ private fun SleepSongsScreen() {
     }
 }
 
-@Composable
-private fun RoutePickerButton() {
-    AndroidView(
-        factory = { context ->
-            MediaRouteButton(context).apply {
-                routeSelector = MediaRouteSelector.Builder()
-                    .addControlCategory(MediaControlIntent.CATEGORY_LIVE_AUDIO)
-                    .build()
-                contentDescription = "Audio output device"
+private fun Context.getOutputDevicesForPicker(): List<OutputDeviceOption> {
+    val audioManager = getSystemService(AudioManager::class.java)
+    val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+
+    val options = mutableListOf(OutputDeviceOption(id = OUTPUT_DEFAULT, label = "System default"))
+
+    devices
+        .filter { device ->
+            device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||
+                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                device.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                device.type == AudioDeviceInfo.TYPE_USB_HEADSET
+        }
+        .distinctBy { it.id }
+        .forEach { device ->
+            val name = device.productName?.toString()?.takeIf { it.isNotBlank() }
+            val fallback = when (device.type) {
+                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Phone speaker"
+                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                AudioDeviceInfo.TYPE_BLE_HEADSET -> "Bluetooth device"
+                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                AudioDeviceInfo.TYPE_USB_HEADSET -> "Headphones"
+                else -> "Audio device"
             }
-        },
-        modifier = Modifier
-            .height(48.dp)
-            .width(48.dp)
-    )
+            options += OutputDeviceOption(id = device.id, label = name ?: fallback)
+        }
+
+    return options
 }
 
 private fun ContentResolver.getDisplayName(uri: Uri): String? {
@@ -344,3 +407,5 @@ private fun formatDuration(durationMs: Long): String {
         String.format("%d:%02d", minutes, seconds)
     }
 }
+
+private const val OUTPUT_DEFAULT = -1
