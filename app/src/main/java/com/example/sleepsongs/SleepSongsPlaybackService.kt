@@ -8,7 +8,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -88,6 +87,7 @@ class SleepSongsPlaybackService : MediaSessionService() {
             NOTIFICATION_ID,
             NOTIFICATION_CHANNEL_ID
         )
+            .setSmallIconResourceId(android.R.drawable.ic_media_play)
             .setMediaDescriptionAdapter(NotificationDescriptionAdapter())
             .setNotificationListener(NotificationListener())
             .build()
