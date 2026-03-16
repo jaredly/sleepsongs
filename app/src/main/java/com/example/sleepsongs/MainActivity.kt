@@ -1,17 +1,20 @@
 package com.example.sleepsongs
 
+import android.Manifest
+import android.content.ComponentName
 import android.content.ContentResolver
 import android.content.Context
-import android.media.AudioAttributes
+import android.content.pm.PackageManager
 import android.media.MediaMetadataRetriever
-import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Bundle.EMPTY
 import android.provider.OpenableColumns
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,9 +23,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -30,7 +37,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -39,15 +45,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.core.os.bundleOf
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionToken
+import androidx.mediarouter.app.MediaRouteButton
+import androidx.mediarouter.media.MediaControlIntent
+import androidx.mediarouter.media.MediaRouteSelector
+import com.google.common.util.concurrent.ListenableFuture
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -67,18 +77,24 @@ class MainActivity : ComponentActivity() {
 private fun SleepSongsScreen() {
     val context = LocalContext.current
     val contentResolver = context.contentResolver
-    val player = remember { LoopingAudioPlayer(context) }
 
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
     var selectedName by remember { mutableStateOf<String?>(null) }
     var repeatCountText by remember { mutableStateOf("3") }
     var fadeOnFinalLoop by remember { mutableStateOf(true) }
     var status by remember { mutableStateOf("Pick a file and press Play") }
-    var currentLoop by remember { mutableIntStateOf(0) }
-    var totalLoops by remember { mutableIntStateOf(0) }
     var selectedDurationMs by remember { mutableStateOf<Long?>(null) }
+    var mediaController by remember { mutableStateOf<MediaController?>(null) }
 
-    val pickAudioLauncher = rememberLauncherForActivityResult(
+    val notificationsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            status = "Notification permission denied. Playback still works while app is open."
+        }
+    }
+
+    val pickFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
@@ -96,9 +112,44 @@ private fun SleepSongsScreen() {
     }
 
     DisposableEffect(Unit) {
+        val token = SessionToken(context, ComponentName(context, SleepSongsPlaybackService::class.java))
+        val controllerFuture: ListenableFuture<MediaController> =
+            MediaController.Builder(context, token).buildAsync()
+
+        controllerFuture.addListener(
+            {
+                try {
+                    mediaController = controllerFuture.get()
+                    status = "Ready"
+                } catch (e: Exception) {
+                    status = "Could not connect to playback service"
+                }
+            },
+            ContextCompat.getMainExecutor(context)
+        )
+
         onDispose {
-            player.release()
+            MediaController.releaseFuture(controllerFuture)
+            mediaController = null
         }
+    }
+
+    DisposableEffect(mediaController) {
+        val controller = mediaController ?: return@DisposableEffect onDispose { }
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                status = if (isPlaying) "Playing" else "Paused / stopped"
+            }
+        }
+        controller.addListener(listener)
+        onDispose { controller.removeListener(listener) }
+    }
+
+    val repeatCount = repeatCountText.toIntOrNull()
+    val totalPlayDurationMs = if (selectedDurationMs != null && repeatCount != null && repeatCount > 0) {
+        selectedDurationMs!! * repeatCount
+    } else {
+        null
     }
 
     Column(
@@ -115,8 +166,16 @@ private fun SleepSongsScreen() {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        Button(onClick = { pickAudioLauncher.launch(arrayOf("audio/*", "video/*")) }) {
-            Text("Choose audio or video file")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(onClick = { pickFileLauncher.launch(arrayOf("audio/*", "video/*")) }) {
+                Text("Choose audio or video")
+            }
+
+            RoutePickerButton()
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -140,13 +199,6 @@ private fun SleepSongsScreen() {
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.fillMaxWidth()
         )
-
-        val repeatCount = repeatCountText.toIntOrNull()
-        val totalPlayDurationMs = if (selectedDurationMs != null && repeatCount != null && repeatCount > 0) {
-            selectedDurationMs!! * repeatCount
-        } else {
-            null
-        }
 
         Text(
             text = when {
@@ -173,37 +225,44 @@ private fun SleepSongsScreen() {
             Text("Fade volume during final loop")
         }
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(onClick = { notificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }) {
+                Icon(Icons.Filled.Notifications, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Enable media notifications")
+            }
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = {
-                    val selectedRepeatCount = repeatCountText.toIntOrNull()
+                    val controller = mediaController
                     val uri = selectedUri
+                    val selectedRepeatCount = repeatCountText.toIntOrNull()
+
                     when {
+                        controller == null -> status = "Playback service is not ready"
                         uri == null -> status = "Select an audio or video file first"
                         selectedRepeatCount == null || selectedRepeatCount <= 0 -> status = "Enter a repeat count greater than 0"
                         else -> {
-                            player.play(
-                                uri = uri,
-                                repeatCount = selectedRepeatCount,
-                                fadeOnFinalLoop = fadeOnFinalLoop,
-                                onLoopStart = { loop, total ->
-                                    currentLoop = loop
-                                    totalLoops = total
-                                    status = "Playing loop $loop of $total"
-                                },
-                                onFinished = {
-                                    status = "Done"
-                                    currentLoop = 0
-                                    totalLoops = 0
-                                },
-                                onError = { error ->
-                                    status = error
-                                    currentLoop = 0
-                                    totalLoops = 0
-                                }
+                            val command = SessionCommand(PlaybackCommands.START_PLAYBACK, EMPTY)
+                            val args = bundleOf(
+                                PlaybackCommands.EXTRA_URI to uri.toString(),
+                                PlaybackCommands.EXTRA_REPEAT_COUNT to selectedRepeatCount,
+                                PlaybackCommands.EXTRA_FADE_ON_FINAL_LOOP to fadeOnFinalLoop,
+                                PlaybackCommands.EXTRA_TITLE to (selectedName ?: "Sleep Song")
                             )
+
+                            controller.sendCustomCommand(command, args)
+                            status = "Starting playback"
                         }
                     }
                 },
@@ -214,10 +273,16 @@ private fun SleepSongsScreen() {
 
             Button(
                 onClick = {
-                    player.stop()
-                    status = "Stopped"
-                    currentLoop = 0
-                    totalLoops = 0
+                    val controller = mediaController
+                    if (controller == null) {
+                        status = "Playback service is not ready"
+                    } else {
+                        controller.sendCustomCommand(
+                            SessionCommand(PlaybackCommands.STOP_PLAYBACK, EMPTY),
+                            Bundle()
+                        )
+                        status = "Stopped"
+                    }
                 },
                 modifier = Modifier.weight(1f)
             ) {
@@ -226,128 +291,25 @@ private fun SleepSongsScreen() {
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-
         Text(text = status, style = MaterialTheme.typography.bodyMedium)
-
-        if (currentLoop > 0 && totalLoops > 0) {
-            Text(
-                text = "Progress: $currentLoop / $totalLoops",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 6.dp)
-            )
-        }
     }
 }
 
-private class LoopingAudioPlayer(context: Context) {
-    private val appContext = context.applicationContext
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-
-    private var player: MediaPlayer? = null
-    private var fadeJob: Job? = null
-
-    fun play(
-        uri: Uri,
-        repeatCount: Int,
-        fadeOnFinalLoop: Boolean,
-        onLoopStart: (loop: Int, total: Int) -> Unit,
-        onFinished: () -> Unit,
-        onError: (String) -> Unit
-    ) {
-        stop()
-
-        val mediaPlayer = MediaPlayer()
-        player = mediaPlayer
-
-        mediaPlayer.setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
-        )
-
-        var currentLoop = 1
-
-        mediaPlayer.setOnPreparedListener { mp ->
-            mp.setVolume(1f, 1f)
-            onLoopStart(currentLoop, repeatCount)
-            mp.start()
-
-            if (fadeOnFinalLoop && repeatCount == 1) {
-                startFadeDuringThisLoop(mp)
+@Composable
+private fun RoutePickerButton() {
+    AndroidView(
+        factory = { context ->
+            MediaRouteButton(context).apply {
+                routeSelector = MediaRouteSelector.Builder()
+                    .addControlCategory(MediaControlIntent.CATEGORY_LIVE_AUDIO)
+                    .build()
+                contentDescription = "Audio output device"
             }
-        }
-
-        mediaPlayer.setOnCompletionListener { mp ->
-            if (currentLoop >= repeatCount) {
-                onFinished()
-                stop()
-                return@setOnCompletionListener
-            }
-
-            currentLoop += 1
-            mp.seekTo(0)
-            mp.setVolume(1f, 1f)
-            onLoopStart(currentLoop, repeatCount)
-            mp.start()
-
-            if (fadeOnFinalLoop && currentLoop == repeatCount) {
-                startFadeDuringThisLoop(mp)
-            }
-        }
-
-        mediaPlayer.setOnErrorListener { _, what, extra ->
-            onError("Playback error ($what, $extra)")
-            stop()
-            true
-        }
-
-        try {
-            mediaPlayer.setDataSource(appContext, uri)
-            mediaPlayer.prepareAsync()
-        } catch (e: Exception) {
-            onError("Could not play selected file: ${e.localizedMessage ?: "unknown error"}")
-            stop()
-        }
-    }
-
-    fun stop() {
-        fadeJob?.cancel()
-        fadeJob = null
-
-        player?.apply {
-            setOnPreparedListener(null)
-            setOnCompletionListener(null)
-            setOnErrorListener(null)
-            if (isPlaying) {
-                stop()
-            }
-            reset()
-            release()
-        }
-        player = null
-    }
-
-    fun release() {
-        stop()
-        scope.cancel()
-    }
-
-    private fun startFadeDuringThisLoop(mp: MediaPlayer) {
-        fadeJob?.cancel()
-        val durationMs = mp.duration.coerceAtLeast(1)
-        val steps = 40
-        val stepDelayMs = (durationMs / steps).coerceAtLeast(25)
-
-        fadeJob = scope.launch {
-            for (step in 0 until steps) {
-                val volume = 1f - (step.toFloat() / steps.toFloat())
-                mp.setVolume(volume, volume)
-                delay(stepDelayMs.toLong())
-            }
-            mp.setVolume(0f, 0f)
-        }
-    }
+        },
+        modifier = Modifier
+            .height(48.dp)
+            .width(48.dp)
+    )
 }
 
 private fun ContentResolver.getDisplayName(uri: Uri): String? {
