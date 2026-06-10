@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
@@ -99,6 +100,7 @@ private fun SleepSongsScreen() {
     var status by remember { mutableStateOf("Pick a file and press Play") }
     var selectedDurationMs by remember { mutableStateOf<Long?>(null) }
     var mediaController by remember { mutableStateOf<MediaController?>(null) }
+    var isPlaying by remember { mutableStateOf(false) }
 
     var showOutputPicker by remember { mutableStateOf(false) }
     var outputOptions by remember { mutableStateOf<List<OutputDeviceOption>>(emptyList()) }
@@ -144,6 +146,7 @@ private fun SleepSongsScreen() {
             {
                 try {
                     mediaController = controllerFuture.get()
+                    isPlaying = mediaController?.isPlaying == true
                     status = "Ready"
                 } catch (_: Exception) {
                     status = "Could not connect to playback service"
@@ -161,8 +164,9 @@ private fun SleepSongsScreen() {
     DisposableEffect(mediaController) {
         val controller = mediaController ?: return@DisposableEffect onDispose { }
         val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                status = if (isPlaying) "Playing" else "Paused / stopped"
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+                status = if (playing) "Playing" else "Paused / stopped"
             }
         }
         controller.addListener(listener)
@@ -306,15 +310,23 @@ private fun SleepSongsScreen() {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(
-                onClick = {
-                    val controller = mediaController
+        Button(
+            onClick = {
+                val controller = mediaController
+
+                if (controller == null) {
+                    status = "Playback service is not ready"
+                } else if (isPlaying) {
+                    controller.sendCustomCommand(
+                        SessionCommand(PlaybackCommands.STOP_PLAYBACK, EMPTY),
+                        Bundle()
+                    )
+                    status = "Stopped"
+                } else {
                     val uri = selectedUri
                     val selectedRepeatCount = repeatCountText.toIntOrNull()
 
                     when {
-                        controller == null -> status = "Playback service is not ready"
                         uri == null -> status = "Select an audio or video file first"
                         selectedRepeatCount == null || selectedRepeatCount <= 0 -> status =
                             "Enter a repeat count greater than 0"
@@ -332,29 +344,13 @@ private fun SleepSongsScreen() {
                             status = "Starting playback"
                         }
                     }
-                },
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("Play")
-            }
-
-            Button(
-                onClick = {
-                    val controller = mediaController
-                    if (controller == null) {
-                        status = "Playback service is not ready"
-                    } else {
-                        controller.sendCustomCommand(
-                            SessionCommand(PlaybackCommands.STOP_PLAYBACK, EMPTY),
-                            Bundle()
-                        )
-                        status = "Stopped"
-                    }
-                },
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("Stop")
-            }
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(80.dp)
+        ) {
+            Text(if (isPlaying) "Stop" else "Play")
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -376,17 +372,24 @@ private fun SleepSongsScreen() {
                     .padding(top = 8.dp)
             )
         } else {
-            recentHistory.forEach { item ->
-                Text(
-                    text = item.displayName ?: item.uriString,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            applySelectedMedia(Uri.parse(item.uriString), item.displayName)
-                        }
-                        .padding(vertical = 10.dp)
-                )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 280.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                recentHistory.forEach { item ->
+                    Text(
+                        text = item.displayName ?: item.uriString,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                applySelectedMedia(Uri.parse(item.uriString), item.displayName)
+                            }
+                            .padding(vertical = 10.dp)
+                    )
+                }
             }
         }
 
@@ -473,7 +476,7 @@ private fun formatDuration(durationMs: Long): String {
 private const val OUTPUT_DEFAULT = -1
 private const val PREFS_NAME = "sleep_songs_prefs"
 private const val PREF_RECENT_MEDIA = "recent_media_items"
-private const val MAX_RECENT_MEDIA_ITEMS = 5
+private const val MAX_RECENT_MEDIA_ITEMS = 20
 
 private fun Context.loadRecentMediaItems(): List<RecentMediaItem> {
     val raw = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(PREF_RECENT_MEDIA, null)
